@@ -119,15 +119,44 @@ describe('fetchCursorRateLimits', () => {
     expect(limited.usageMetadata?.retryAtMs).toBeGreaterThan(Date.now())
   })
 
-  it('treats a redirect to the login page as an expired sign-in', async () => {
-    // Why: the dashboard bounces an unusable session to /login. With
-    // redirect:'error' that surfaced as a generic network failure, hiding the
-    // one message that tells the user what to do.
-    netFetchMock.mockResolvedValueOnce(jsonResponse({}, 302, { location: '/login' }))
-    const limits = await fetchCursorRateLimits({ authReadResult: session() })
-    expect(limits.usageMetadata?.failureKind).toBe('stale-token')
-    expect(limits.error).toContain('cursor-agent login')
-  })
+  it.each([
+    [301, '/login'],
+    [302, '/login?returnTo=%2Fdashboard'],
+    [302, '../login'],
+    [303, 'https://cursor.com/login'],
+    [307, 'https://cursor.com/login?returnTo=%2Fdashboard'],
+    [308, '/login/']
+  ] as const)(
+    'treats HTTP %i to the Cursor login page as expired sign-in',
+    async (status, location) => {
+      netFetchMock.mockResolvedValueOnce(jsonResponse({}, status, { location }))
+      const limits = await fetchCursorRateLimits({ authReadResult: session() })
+      expect(limits.usageMetadata?.failureKind).toBe('stale-token')
+      expect(limits.error).toContain('cursor-agent login')
+    }
+  )
+
+  it.each([
+    [403, null],
+    [403, '/login'],
+    [302, null],
+    [302, '/dashboard'],
+    [302, 'login'],
+    [302, 'https://example.com/login'],
+    [302, 'http://[invalid'],
+    [304, '/login'],
+    [307, 'https://cursor.com.example.com/login']
+  ] as const)(
+    'reports HTTP %i with location %s without claiming sign-in expired',
+    async (status, location) => {
+      netFetchMock.mockResolvedValueOnce(jsonResponse({}, status, location ? { location } : {}))
+      const limits = await fetchCursorRateLimits({ authReadResult: session() })
+      expect(limits.status).toBe('error')
+      expect(limits.error).toBe(`Cursor usage request failed (HTTP ${status})`)
+      expect(limits.usageMetadata?.failureKind).toBe('server')
+      expect(limits.usageMetadata?.authProvenance).toBeTruthy()
+    }
+  )
 
   it('names the account on failures too, so an account switch can clear stale figures', async () => {
     // Why: the service drops a previous account's numbers only when the fresh
@@ -197,6 +226,15 @@ describe('fetchCursorRateLimits', () => {
     expect(limits.status).toBe('ok')
     expect(limits.monthly?.usedPercent).toBe(50)
     expect(netFetchMock.mock.calls[1]?.[0]).toBe('https://cursor.com/api/usage?user=auth0%7Cuser_1')
+  })
+
+  it('preserves a forbidden response from the legacy usage endpoint', async () => {
+    netFetchMock
+      .mockResolvedValueOnce(jsonResponse({ membershipType: 'free' }))
+      .mockResolvedValueOnce(jsonResponse({}, 403))
+    const limits = await fetchCursorRateLimits({ authReadResult: session() })
+    expect(limits.error).toBe('Cursor usage request failed (HTTP 403)')
+    expect(limits.usageMetadata?.failureKind).toBe('server')
   })
 
   it('hides the bar for an account with no quota rather than alerting forever', async () => {

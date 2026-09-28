@@ -68,6 +68,25 @@ function requestHeaders(session: CursorAuthSession): Record<string, string> {
 
 type FetchOutcome = { kind: 'data'; data: unknown } | { kind: 'result'; result: ProviderRateLimits }
 
+function isCursorLoginRedirect(response: Response, requestUrl: string): boolean {
+  if (![301, 302, 303, 307, 308].includes(response.status)) {
+    return false
+  }
+  const location = response.headers.get('location')
+  if (!location) {
+    return false
+  }
+  try {
+    const target = new URL(location, requestUrl)
+    return (
+      target.origin === DASHBOARD_ORIGIN &&
+      (target.pathname === '/login' || target.pathname === '/login/')
+    )
+  } catch {
+    return false
+  }
+}
+
 async function fetchDashboardJson(
   url: string,
   session: CursorAuthSession,
@@ -89,7 +108,7 @@ async function fetchDashboardJson(
     headers: requestHeaders(session),
     signal: requestSignal
   })
-  if (res.status === 401 || res.status === 403 || (res.status >= 300 && res.status < 400)) {
+  if (res.status === 401 || isCursorLoginRedirect(res, url)) {
     return {
       kind: 'result',
       result: result('error', EXPIRED_MESSAGE, {
