@@ -68,25 +68,6 @@ function requestHeaders(session: CursorAuthSession): Record<string, string> {
 
 type FetchOutcome = { kind: 'data'; data: unknown } | { kind: 'result'; result: ProviderRateLimits }
 
-function isCursorLoginRedirect(response: Response, requestUrl: string): boolean {
-  if (![301, 302, 303, 307, 308].includes(response.status)) {
-    return false
-  }
-  const location = response.headers.get('location')
-  if (!location) {
-    return false
-  }
-  try {
-    const target = new URL(location, requestUrl)
-    return (
-      target.origin === DASHBOARD_ORIGIN &&
-      (target.pathname === '/login' || target.pathname === '/login/')
-    )
-  } catch {
-    return false
-  }
-}
-
 async function fetchDashboardJson(
   url: string,
   session: CursorAuthSession,
@@ -101,14 +82,12 @@ async function fetchDashboardJson(
     ? AbortSignal.any([signal, AbortSignal.timeout(API_TIMEOUT_MS)])
     : AbortSignal.timeout(API_TIMEOUT_MS)
   const res = await net.fetch(url, {
-    // Why manual: the dashboard bounces an unusable session to /login, and
-    // 'error' would surface that as a generic network failure instead of the
-    // actionable sign-in message below.
+    // Do not follow dashboard redirects with session credentials.
     redirect: 'manual',
     headers: requestHeaders(session),
     signal: requestSignal
   })
-  if (res.status === 401 || isCursorLoginRedirect(res, url)) {
+  if (res.status === 401) {
     return {
       kind: 'result',
       result: result('error', EXPIRED_MESSAGE, {
